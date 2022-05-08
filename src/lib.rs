@@ -9,10 +9,9 @@ pub mod parser {
     pub struct Parser;
 
     impl Parser {
-        pub fn handle(self, filename : PathBuf) {
+        pub fn handle(self, filename : PathBuf) -> String {
             let file_content = self.load_file(&filename);
 
-            let mut output = File::create("foo.hack").expect("Error during dist file creation");
 
             let mut symbol_table = SymbolTable::new();
             let mut i : i32 = 0;
@@ -34,16 +33,22 @@ pub mod parser {
             }
 
             let file_content = self.load_file(&filename);
+            let mut assembled_string = String::new();
             for line in file_content.lines() {
                 let line = line.expect("Unable to read line during assembling pass");
 
                 let assembled_line = self.parse(line, &mut symbol_table);
 
                 match assembled_line {
-                    Some(assembled_line) => writeln!(output, "{}", assembled_line).expect("Error during write into dist file"),
+                    Some(assembled_line) => {
+                        assembled_string.push_str(assembled_line.as_str());
+                        assembled_string.push_str("\n");
+                    },
                     None => (),
                 }
             }
+
+            return assembled_string;
         }
 
         fn parse(&self, line: String, symbol_table: &mut SymbolTable) -> Option<String> {
