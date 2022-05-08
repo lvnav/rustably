@@ -1,65 +1,96 @@
 pub mod parser {
+    use std::collections::HashMap;
     use std::fs::File;
     use std::io::{prelude::*, BufReader};
     use std::path::PathBuf;
     use regex::Regex;
     use self::utils::CommandType;
 
-    pub struct Parser {
-        pub actual_command_type: CommandType
-    }
+    pub struct Parser;
 
     impl Parser {
-        pub fn handle(mut self, filename : PathBuf) {
-            let file_content = self.load_file(filename);
+        pub fn handle(self, filename : PathBuf) {
+            let file_content = self.load_file(&filename);
 
             let mut output = File::create("foo.hack").expect("Error during dist file creation");
 
+            let mut symbol_table = SymbolTable::new();
+            let mut i : i32 = 0;
             for line in file_content.lines() {
-                let line = line.expect("Unable to read line");
-                let assembled_line = self.parse(line);
+                let line = line.expect("Unable to read line during symbol pass");
+
+                let command_type = self.decode_command_type(&line);
+
+                match command_type {
+                    CommandType::ACOMMAND | CommandType::CCOMMAND => i += 1,
+                    CommandType::LCOMMAND => {
+                        let re = Regex::new(r"\(|\)").expect("Error during regex construction");
+                        let line = re.replace_all(line.as_str(), "").trim().to_string();
+
+                        symbol_table.symbol_table.entry(line).or_insert(i);
+                    },
+                    _ => ()
+                };
+            }
+
+            let file_content = self.load_file(&filename);
+            for line in file_content.lines() {
+                let line = line.expect("Unable to read line during assembling pass");
+
+                let assembled_line = self.parse(line, &mut symbol_table);
 
                 match assembled_line {
-                    Some(assembled_line) => writeln!(output, "{}", assembled_line).expect("Error during writing into dist file"),
+                    Some(assembled_line) => writeln!(output, "{}", assembled_line).expect("Error during write into dist file"),
                     None => (),
                 }
             }
         }
 
-        fn parse(&mut self, line: String) -> Option<String> {
-            if line.starts_with("/") || line.starts_with(" ") {
-                return None;
-            }
-            
+        fn parse(&self, line: String, symbol_table: &mut SymbolTable) -> Option<String> {
+            let line = line.trim();
+            let re = Regex::new(r"//.+").expect("Error during regex construction");
+            let result = re.replace_all(line, "");
 
-            self.decode_command_type(&line);
+            let line = result.trim().to_string();
 
-            let assembled_line = match self.actual_command_type {
-                CommandType::ACOMMAND => self.handle_a_command(&line),
+            let command_type = self.decode_command_type(&line);
+            let assembled_line = match command_type {
+                CommandType::ACOMMAND => self.handle_a_command(&line, symbol_table),
                 CommandType::CCOMMAND => self.handle_c_command(&line),
-                CommandType::LCOMMAND => self.handle_l_command(&line),
+                CommandType::LCOMMAND => return None,
                 CommandType::NOCOMMAND => return None,
             };
 
             Some(assembled_line)
         }
 
-        fn decode_command_type(&mut self, line: &String) {
+        fn decode_command_type(&self, line: &String) -> CommandType {
             if line.len() == 0 {
-                self.actual_command_type = CommandType::NOCOMMAND
+                return CommandType::NOCOMMAND
             } else if line.starts_with("@") {
-                self.actual_command_type = CommandType::ACOMMAND 
+                return CommandType::ACOMMAND 
             } else if line.starts_with("(") {
-                self.actual_command_type = CommandType::LCOMMAND 
+                return CommandType::LCOMMAND 
+            } else if line.starts_with("/") {
+                return CommandType::NOCOMMAND
             } else {
-                self.actual_command_type = CommandType::CCOMMAND 
+                return CommandType::CCOMMAND 
             }
         }
 
-        fn handle_a_command(&self, line: &String) -> String {
+        fn handle_a_command(&self, line: &String, symbol_table: &mut SymbolTable) -> String {
             let symbol = self.symbol(&line);
 
-            let parsed_int = symbol.parse::<i16>().expect("Error during symbol parsing");
+            let parsed_int = if symbol.parse::<i32>().is_err() {
+                if !symbol_table.symbol_table.contains_key(&symbol) {
+                    symbol_table.symbol_table.entry(symbol.to_owned()).or_insert(symbol_table.next_available_ram_slot);
+                    symbol_table.next_available_ram_slot += 1;
+                } 
+
+                symbol_table.symbol_table.get(&symbol).expect("retrieving symbol error").to_owned()
+            } else {
+                symbol.parse::<i32>().expect("error during parsing symbol")
+            };
 
             let binary = format!("{:b}", parsed_int);
             let padded_binary = format!("{:0>16}", binary);
@@ -81,7 +112,7 @@ pub mod parser {
                 ("", line.as_str())
             };
 
-            let (dest, comp, _line) = if line.contains("=") {
+            let (dest, comp, line) = if line.contains("=") {
                 let line_parts : Vec<&str> = line.splitn(2, '=').collect();
 
                 let dest = line_parts[0]; 
@@ -162,16 +193,18 @@ pub mod parser {
             let re = Regex::new(r"[@\(\)]").expect("Error during regex construction");
             let result = re.replace_all(line, "");
 
-            String::from(result)
+            result.to_string()
         }
 
-        fn load_file(&self, filepath: PathBuf) -> BufReader<File> {
+        fn load_file(&self, filepath: &PathBuf) -> BufReader<File> {
             let file = File::open(filepath).expect("Unable to open file");
             BufReader::new(file)
         }
+
     }
 
     pub mod utils {
+        #[derive(Debug)]
         pub enum CommandType {
             NOCOMMAND,
             ACOMMAND,
@@ -179,4 +212,45 @@ pub mod parser {
             LCOMMAND,
         }
     }
+
+    struct SymbolTable {
+        symbol_table: HashMap<String, i32>,
+        next_available_ram_slot: i32
+    }
+
+    impl SymbolTable {
+        fn new() -> SymbolTable {
+            SymbolTable { 
+                symbol_table : 
+                    HashMap::from([
+                                  ("SP".to_string(), 0),
+                                  ("LCL".to_string(), 1),
+                                  ("ARG".to_string(), 2),
+                                  ("THIS".to_string(), 3),
+                                  ("THAT".to_string(), 4),
+                                  ("SCREEN".to_string(), 16384),
+                                  ("KBD".to_string(), 24576),
+                                  ("R0".to_string(), 0),
+                                  ("R1".to_string(), 1),
+                                  ("R2".to_string(), 2),
+                                  ("R3".to_string(), 3),
+                                  ("R4".to_string(), 4),
+                                  ("R5".to_string(), 5),
+                                  ("R6".to_string(), 6),
+                                  ("R7".to_string(), 7),
+                                  ("R8".to_string(), 8),
+                                  ("R9".to_string(), 9),
+                                  ("R10".to_string(), 10),
+                                  ("R11".to_string(), 11),
+                                  ("R12".to_string(), 12),
+                                  ("R13".to_string(), 13),
+                                  ("R14".to_string(), 14),
+                                  ("R15".to_string(), 15),
+                                  ]),
+
+                                  next_available_ram_slot: 16
+            }
+        }
+    }
+
 }

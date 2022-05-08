@@ -4,12 +4,9 @@ use std::path::PathBuf;
 
 mod lib;
 use lib::parser::Parser as Parser;
-use lib::parser::utils::CommandType as CommandType;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let parser = Parser {
-        actual_command_type: CommandType::NOCOMMAND
-    };
+    let parser = Parser;
 
     parser.handle(get_filepath());
 
